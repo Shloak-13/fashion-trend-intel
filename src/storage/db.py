@@ -80,6 +80,27 @@ def get_all_raw_content(engine) -> list[dict]:
         return [dict(row._mapping) for row in result]
 
 
+def delete_raw_content_by_source(engine, source: str) -> int:
+    """Delete all raw_content rows for a given source, along with any keywords
+    extracted from them (SQLite doesn't cascade-delete by default). Used to
+    clear stale data before a re-run with different ingestion parameters.
+    Returns the number of raw_content rows deleted."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                DELETE FROM keywords
+                WHERE content_id IN (SELECT id FROM raw_content WHERE source = :source)
+                """
+            ),
+            {"source": source},
+        )
+        result = conn.execute(
+            text("DELETE FROM raw_content WHERE source = :source"), {"source": source}
+        )
+        return result.rowcount
+
+
 def insert_keyword(
     engine, content_id: int, keyword: str, keyword_type: str, confidence: float | None
 ) -> int:

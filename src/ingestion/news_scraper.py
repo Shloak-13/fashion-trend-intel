@@ -8,9 +8,20 @@ sources=vogue,elle,harpersbazaar,businessoffashion. None of these exist as
 NewsAPI source IDs — confirmed via client.get_sources(): NewsAPI's ~125
 registered sources skew toward general news/tech/business, with no
 fashion-specific publishers at all. Passing an invalid `sources` param
-errors the whole request, so this ingester queries by keyword only (the
-QUERIES list from the spec), relying on `q` to surface fashion-relevant
-coverage from NewsAPI's full index rather than a curated source allowlist.
+errors the whole request, so this ingester queries by keyword only, relying
+on `q` to surface fashion-relevant coverage from NewsAPI's full index rather
+than a curated source allowlist.
+
+NOTE: the spec's QUERIES list also included ambiguous single words —
+"runway" (matches airport/aircraft runways) and "designer" (matches
+software/game/interior designers) — which measurably dominated the noise in
+the first real ingestion run (only 20% of 133 articles had any
+fashion-taxonomy-matched keyword; manual review confirmed most were
+off-topic: real estate, PyPI packages, Sensex, F1 racing, TV recaps). Below
+are the same 8 topics, rephrased as quoted exact phrases (NewsAPI supports
+`"..."` for exact-phrase and `AND`/`OR`/`NOT` operators in `q`) so each
+query is unambiguous on its own rather than relying on downstream filtering
+to compensate for query-level noise.
 """
 
 import json
@@ -27,14 +38,14 @@ RATE_LIMIT_SECONDS = 2
 PAGE_SIZE = 20
 
 QUERIES = [
-    "fashion trends",
-    "street style",
-    "runway",
-    "designer",
-    "fashion week",
-    "Zara",
-    "H&M",
-    "luxury fashion",
+    '"fashion trends"',
+    '"street style"',
+    '"fashion week"',
+    '"runway show"',
+    '"fashion designer"',
+    "Zara AND fashion",
+    "H&M AND fashion",
+    '"luxury fashion"',
 ]
 
 

@@ -95,3 +95,25 @@ def test_delete_keywords_for_content_removes_only_that_contents_rows(db_path):
 
     assert db.get_keywords_by_content_id(engine, content_id_1) == []
     assert len(db.get_keywords_by_content_id(engine, content_id_2)) == 1
+
+
+def test_delete_raw_content_by_source_removes_only_that_sources_rows(db_path):
+    engine = db.init_db(db_path)
+    db.insert_raw_content(engine, source="news", title="news post")
+    db.insert_raw_content(engine, source="reddit", title="reddit post")
+
+    deleted = db.delete_raw_content_by_source(engine, "news")
+
+    assert deleted == 1
+    assert db.get_raw_content_by_source(engine, "news") == []
+    assert len(db.get_raw_content_by_source(engine, "reddit")) == 1
+
+
+def test_delete_raw_content_by_source_also_deletes_its_keywords(db_path):
+    engine = db.init_db(db_path)
+    content_id = db.insert_raw_content(engine, source="news", title="news post")
+    db.insert_keyword(engine, content_id=content_id, keyword="oversized", keyword_type="Silhouettes", confidence=1.0)
+
+    db.delete_raw_content_by_source(engine, "news")
+
+    assert db.get_keywords_by_content_id(engine, content_id) == []
