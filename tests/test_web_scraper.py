@@ -86,6 +86,80 @@ def test_extract_article_metadata_handles_missing_author_and_tags_gracefully():
     assert raw["tags"] == []
 
 
+# Highsnobiety doesn't expose author/tags via meta tags at all (checked live
+# before writing this) — they're only in an inline analytics `dataLayer`
+# blob: window['dataLayer'].push({...}).
+SAMPLE_HTML_DATALAYER = """
+<html>
+<head>
+<meta property="og:title" content="Nike&#x2019;s Wagyu Air Max Is a Full-Flavored Stepper">
+<meta property="og:description" content="A beef-flavored Air Max 90 sneaker.">
+<meta property="article:published_time" content="2026-09-08T20:21:17+00:00">
+<meta property="article:section" content="Sneakers">
+</head>
+<body>
+<script data-rh="true" type="text/javascript">
+window['dataLayer'] = window['dataLayer'] || [];
+window['dataLayer'].push({
+  "adult_content": false,
+  "article_id": "abc123",
+  "author": "Morgan Smith",
+  "categories": ["Sneakers"],
+  "post_title": "Nike's Wagyu Air Max Is a Full-Flavored Stepper",
+  "tags": ["nike", "air-max"]
+});
+</script>
+</body>
+</html>
+"""
+
+# Hypebeast has article:tag meta tags but no author meta at all — the byline
+# is a plain HTML anchor: <a rel="author">Name</a>. Also has no og:description
+# on some articles, falling back to <meta name="description">.
+SAMPLE_HTML_REL_AUTHOR = """
+<html>
+<head>
+<meta property="og:title" content="BlackEyePatch&#x20;Gives&#x20;the&#x20;G-SHOCK&#x20;a&#x20;Gold&#x20;Finish">
+<meta name="description" content="The duo's third collaboration arrives in Japan this October.">
+<meta property="article:published_time" content="2026-09-09T12:20:54+00:00">
+<meta property="article:tag" content="G-Shock">
+<meta property="article:tag" content="blackeyepatch">
+</head>
+<body>
+<span class="author"><span class="author-name">By <a class="article-author" rel="author" href="https://hypebeast.com/author/zoeleung">Zoe Leung</a></span></span>
+<div class="recirc-module">
+  <a class="article-author" rel="author" href="https://hypebeast.com/author/sophie">Sophie Caraan</a>
+</div>
+</body>
+</html>
+"""
+
+
+def test_extract_article_metadata_falls_back_to_datalayer_author_and_tags():
+    url = "https://www.highsnobiety.com/p/wagyu-nike-air-max-90/"
+    result = web_scraper.extract_article_metadata(SAMPLE_HTML_DATALAYER, url)
+
+    assert result["author"] == "Morgan Smith"
+    raw = json.loads(result["raw_json"])
+    assert raw["tags"] == ["nike", "air-max", "Sneakers"]
+
+
+def test_extract_article_metadata_falls_back_to_rel_author_anchor():
+    url = "https://hypebeast.com/2026/9/blackeyepatch-gshock"
+    result = web_scraper.extract_article_metadata(SAMPLE_HTML_REL_AUTHOR, url)
+
+    # Must pick the real byline (appears first in the DOM), not a
+    # recirculation-module author link further down the page.
+    assert result["author"] == "Zoe Leung"
+
+
+def test_extract_article_metadata_falls_back_to_meta_description_for_body():
+    url = "https://hypebeast.com/2026/9/blackeyepatch-gshock"
+    result = web_scraper.extract_article_metadata(SAMPLE_HTML_REL_AUTHOR, url)
+
+    assert result["body"] == "The duo's third collaboration arrives in Japan this October."
+
+
 SAMPLE_SITEMAP_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
         xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
@@ -111,6 +185,14 @@ def test_parse_sitemap_article_urls_excludes_image_locs():
         "https://www.whowhatwear.com/fashion/article-two",
     ]
     assert not any("cdn.mos.cms.futurecdn.net" in u for u in urls)
+
+
+def test_sites_config_has_all_three_targets_with_correct_sitemap_urls():
+    assert set(web_scraper.SITES.keys()) == {"whowhatwear", "highsnobiety", "hypebeast"}
+    assert web_scraper.SITES["whowhatwear"]["sitemap_url"] == "https://www.whowhatwear.com/sitemap-news.xml"
+    assert web_scraper.SITES["highsnobiety"]["sitemap_url"] == "https://highsnobiety.com/sitemap-news.xml"
+    # Hypebeast's sitemap filename differs from the other two (checked live).
+    assert web_scraper.SITES["hypebeast"]["sitemap_url"] == "https://hypebeast.com/news-sitemap.xml"
 
 
 def test_can_fetch_merges_rules_across_multiple_useragent_blocks():

@@ -1,33 +1,42 @@
-"""Web scraper: pulls Who What Wear articles into raw_content.
+"""Web scraper: pulls articles from Who What Wear, Highsnobiety, and
+Hypebeast into raw_content, per CLAUDE.md Section 7.4.
 
 Run: daily at 8am (see scheduler/cron_jobs.py).
-Targets Who What Wear first per CLAUDE.md Section 7.4 (Highsnobiety and
-Hypebeast follow later, added to this same module).
 
-robots.txt (https://www.whowhatwear.com/robots.txt, checked before writing
-this): `User-agent: *` disallows only deal-comparison pages, embeds,
-outlinks, comments, infinite-scroll endpoints, and search/sort/product query
-strings — normal article URLs and the sitemap are not disallowed. A named
-list of AI-crawler user-agents is fully blocked, but this scraper identifies
-as FASHIONBOT_USER_AGENT below, which isn't in that list.
+robots.txt was checked live for every site before writing any scraping code
+for it (see SITES below and the git history of this file for what each
+robots.txt said). All three permit a generic user agent to fetch normal
+article URLs and their sitemap; each blocks a handful of admin/search/embed/
+shop-filter paths and a few named bots this scraper doesn't identify as.
 
-Article discovery uses sitemap-news.xml rather than scraping category/
-listing pages, both because it's simpler and because it avoids the
-disallowed infinite-scroll paths entirely. can_fetch() re-checks robots.txt
-live via robotparser before every fetch, so a future robots.txt change is
-respected automatically rather than relying on today's one-time read.
+Article discovery uses each site's news sitemap rather than scraping
+category/listing pages — simpler, and avoids disallowed paths (e.g. Who
+What Wear's infinite-scroll endpoints) entirely. can_fetch() re-checks
+robots.txt live via protego before every fetch, so a future robots.txt
+change is respected automatically rather than relying on a one-time read.
 
-Headline/author/tags/published-date are pulled from standard <head> meta
-tags (og:title, mrf:authors, article:tag, article:published_time) rather
-than scraping visible page structure — more robust against a CSS/layout
-redesign, and how Future plc sites (which run Who What Wear) already expose
-this data. article:tag has no dedicated raw_content column (the CLAUDE.md
+Headline/description/published-date/tags are pulled from standard <head>
+meta tags (og:title, og:description / meta[name=description],
+article:published_time, article:tag) where a site exposes them — more
+robust against a CSS/layout redesign than scraping visible structure.
+Author and tags aren't consistently in meta tags across all three sites
+(checked live per site), so extract_article_metadata() falls back through
+site-specific sources in order:
+  - author: meta[property=mrf:authors] -> inline `dataLayer.push({...})`
+    analytics blob (Highsnobiety) -> first <a rel="author"> in the DOM
+    (Hypebeast; picks the real byline over a later recirculation-module link
+    because it appears first)
+  - tags: meta[property=article:tag] (repeated tag) -> dataLayer tags/
+    categories
+  - body: og:description -> meta[name=description]
+None of these has a dedicated raw_content column for tags (the CLAUDE.md
 Section 4.2 schema doesn't define one), so tags go into raw_json alongside
 the article section, matching how reddit_scraper.py stores its extra fields
 (score, num_comments) in raw_json rather than adding new columns.
 """
 
 import json
+import re
 import time
 from html import unescape
 
@@ -39,18 +48,32 @@ from protego import Protego
 from src.processing.cleaner import dedupe_content
 from src.storage import db
 
-BASE_URL = "https://www.whowhatwear.com"
-SITEMAP_URL = f"{BASE_URL}/sitemap-news.xml"
-ROBOTS_URL = f"{BASE_URL}/robots.txt"
 USER_AGENT = "FashionTrendBot/1.0 (+research project; contact: shloakshetty1@gmail.com)"
 REQUEST_HEADERS = {"User-Agent": USER_AGENT}
 
 RATE_LIMIT_SECONDS = 2
 LIMIT = 20
 
+# Sitemap/robots URLs checked live (see module docstring) before adding each site.
+SITES = {
+    "whowhatwear": {
+        "sitemap_url": "https://www.whowhatwear.com/sitemap-news.xml",
+        "robots_url": "https://www.whowhatwear.com/robots.txt",
+    },
+    "highsnobiety": {
+        "sitemap_url": "https://highsnobiety.com/sitemap-news.xml",
+        "robots_url": "https://highsnobiety.com/robots.txt",
+    },
+    "hypebeast": {
+        # Filename differs from the other two sites' sitemaps (checked live).
+        "sitemap_url": "https://hypebeast.com/news-sitemap.xml",
+        "robots_url": "https://hypebeast.com/robots.txt",
+    },
+}
 
-def _robot_parser() -> Protego:
-    """Fetch and parse robots.txt.
+
+def _robot_parser(robots_url: str) -> Protego:
+    """Fetch and parse a site's robots.txt.
 
     Uses protego, not stdlib urllib.robotparser: whowhatwear.com's robots.txt
     has two separate `User-agent: *` blocks (a "vanilla-wide" one with
@@ -60,14 +83,15 @@ def _robot_parser() -> Protego:
     which would make can_fetch() wrongly allow disallowed paths. protego
     correctly merges rules across multiple same-agent blocks per RFC 9309.
     """
-    response = requests.get(ROBOTS_URL, headers=REQUEST_HEADERS, timeout=10)
+    response = requests.get(robots_url, headers=REQUEST_HEADERS, timeout=10)
     response.raise_for_status()
     return Protego.parse(response.text)
 
 
 def can_fetch(url: str, rp: Protego | None = None) -> bool:
     """Check whether robots.txt permits fetching url for our user agent."""
-    rp = rp or _robot_parser()
+    if rp is None:
+        raise ValueError("rp is required (pass a Protego instance from _robot_parser())")
     return rp.can_fetch(url, USER_AGENT)
 
 
@@ -91,18 +115,55 @@ def parse_sitemap_article_urls(xml_text: str) -> list[str]:
     return urls
 
 
-def fetch_sitemap_article_urls(limit: int = LIMIT) -> list[str]:
-    """Fetch sitemap-news.xml and return up to limit article URLs."""
-    response = requests.get(SITEMAP_URL, headers=REQUEST_HEADERS, timeout=10)
+def fetch_sitemap_article_urls(sitemap_url: str, limit: int = LIMIT) -> list[str]:
+    """Fetch a site's news sitemap and return up to limit article URLs."""
+    response = requests.get(sitemap_url, headers=REQUEST_HEADERS, timeout=10)
     response.raise_for_status()
     return parse_sitemap_article_urls(response.text)[:limit]
 
 
-def extract_article_metadata(html: str, url: str) -> dict:
-    """Parse an article page's <head> meta tags into a raw_content-ready dict.
+def _extract_datalayer_author_and_tags(html: str) -> tuple[str | None, list[str]]:
+    """Some sites (Highsnobiety, checked live) don't expose author/tags via
+    meta tags at all — only in an inline analytics blob:
+    `window['dataLayer'].push({"article_id": ..., "author": ..., "tags": [...]})`.
+    A page can have multiple dataLayer.push calls (other analytics events);
+    this picks the one identifiable as article metadata via "article_id"/
+    "post_title" keys and ignores the rest. Returns (None, []) if not found.
+    """
+    for match in re.finditer(r"dataLayer[\"']\]\.push\(", html):
+        start = html.find("{", match.end())
+        if start == -1:
+            continue
+        depth = 0
+        end = None
+        for i in range(start, len(html)):
+            if html[i] == "{":
+                depth += 1
+            elif html[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end is None:
+            continue
+        try:
+            data = json.loads(html[start:end])
+        except json.JSONDecodeError:
+            continue
+        if "article_id" in data or "post_title" in data:
+            tags = list(dict.fromkeys((data.get("tags") or []) + (data.get("categories") or [])))
+            return data.get("author"), tags
+    return None, []
 
-    Pure function — no network. Missing fields degrade gracefully (None /
-    empty string / empty list) rather than raising.
+
+def extract_article_metadata(html: str, url: str) -> dict:
+    """Parse an article page into a raw_content-ready dict.
+
+    Pure function — no network. Prefers <head> meta tags; falls back through
+    site-specific sources for fields that aren't consistently in meta tags
+    across Who What Wear / Highsnobiety / Hypebeast (see module docstring).
+    Missing fields degrade gracefully (None / empty string / empty list)
+    rather than raising.
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -110,11 +171,16 @@ def extract_article_metadata(html: str, url: str) -> dict:
         tag = soup.find("meta", property=property_name)
         return tag.get("content") if tag else None
 
+    def meta_name(name: str) -> str | None:
+        tag = soup.find("meta", attrs={"name": name})
+        return tag.get("content") if tag else None
+
+    def clean(text: str | None) -> str | None:
+        return unescape(text) if text else text
+
     title = meta_content("og:title")
     if not title and soup.title:
         title = soup.title.text.split("|")[0].strip()
-    if title:
-        title = unescape(title)
 
     tags = [
         tag.get("content")
@@ -122,37 +188,53 @@ def extract_article_metadata(html: str, url: str) -> dict:
         if tag.get("content")
     ]
 
+    author = meta_content("mrf:authors")
+    datalayer_author, datalayer_tags = _extract_datalayer_author_and_tags(html)
+    author = author or datalayer_author
+    tags = tags or datalayer_tags
+
+    if not author:
+        byline = soup.find("a", attrs={"rel": "author"})
+        if byline:
+            author = byline.get_text(strip=True)
+
+    body = meta_content("og:description") or meta_name("description") or ""
+
     return {
         "source_id": url,
         "url": url,
-        "title": title,
-        "body": meta_content("og:description") or "",
-        "author": meta_content("mrf:authors"),
+        "title": clean(title),
+        "body": clean(body) or "",
+        "author": clean(author),
         "published_at": meta_content("article:published_time"),
         "raw_json": json.dumps(
             {
-                "tags": tags,
+                "tags": [clean(t) for t in tags],
                 "section": meta_content("article:section"),
             }
         ),
     }
 
 
-def run(limit: int = LIMIT) -> int:
-    """Ingest Who What Wear articles into raw_content.
+def run(site: str, limit: int = LIMIT) -> int:
+    """Ingest articles from one configured site (a key in SITES) into raw_content.
 
-    Discovers article URLs via sitemap-news.xml, checks each against
-    robots.txt, fetches with a 2-second delay between requests, and skips
+    Discovers article URLs via that site's news sitemap, checks each against
+    its robots.txt, fetches with a 2-second delay between requests, and skips
     (logs, continues) on any per-article failure instead of crashing the
     whole run. Returns the number of rows inserted.
     """
+    if site not in SITES:
+        raise ValueError(f"Unknown site '{site}'. Known sites: {list(SITES)}")
+    config = SITES[site]
+
     engine = db.init_db()
-    rp = _robot_parser()
+    rp = _robot_parser(config["robots_url"])
 
     try:
-        urls = fetch_sitemap_article_urls(limit)
+        urls = fetch_sitemap_article_urls(config["sitemap_url"], limit)
     except Exception:
-        logger.exception("Failed to fetch sitemap: {}", SITEMAP_URL)
+        logger.exception("Failed to fetch sitemap for {}: {}", site, config["sitemap_url"])
         return 0
 
     articles: list[dict] = []
@@ -178,14 +260,19 @@ def run(limit: int = LIMIT) -> int:
     rows_inserted = 0
     for article in deduped:
         try:
-            db.insert_raw_content(engine, source="whowhatwear", **article)
+            db.insert_raw_content(engine, source=site, **article)
             rows_inserted += 1
         except Exception:
             logger.exception("Failed to insert article: {}", article.get("url"))
 
-    logger.info("Who What Wear ingestion complete: {} rows inserted", rows_inserted)
+    logger.info("{} ingestion complete: {} rows inserted", site, rows_inserted)
     return rows_inserted
 
 
+def run_all(limit: int = LIMIT) -> dict[str, int]:
+    """Run every configured site's scraper. Returns {site: rows_inserted}."""
+    return {site: run(site, limit) for site in SITES}
+
+
 if __name__ == "__main__":
-    run()
+    run_all()
