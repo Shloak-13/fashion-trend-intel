@@ -1,0 +1,108 @@
+"""SQLite/PostgreSQL connection and query helpers for the fashion trend pipeline."""
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+from loguru import logger
+from sqlalchemy import create_engine, inspect, text
+
+SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+load_dotenv()
+
+
+def _database_url(db_path: str | None) -> str:
+    """Resolve the SQLAlchemy database URL, preferring an explicit path over DATABASE_URL."""
+    if db_path:
+        return f"sqlite:///{db_path}"
+    return os.getenv("DATABASE_URL", "sqlite:///data/fashion_trends.db")
+
+
+def init_db(db_path: str | None = None):
+    """Create the engine and apply schema.sql (idempotent via CREATE TABLE IF NOT EXISTS)."""
+    engine = create_engine(_database_url(db_path))
+    schema_sql = SCHEMA_PATH.read_text()
+    with engine.begin() as conn:
+        for statement in schema_sql.split(";"):
+            statement = statement.strip()
+            if statement:
+                conn.execute(text(statement))
+    logger.info("Database initialised at {}", engine.url)
+    return engine
+
+
+def get_table_names(engine) -> list[str]:
+    """Return the list of table names currently present in the database."""
+    return inspect(engine).get_table_names()
+
+
+def insert_raw_content(
+    engine,
+    source: str,
+    source_id: str | None = None,
+    url: str | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    author: str | None = None,
+    published_at: str | None = None,
+    raw_json: str | None = None,
+) -> int:
+    """Insert a row into raw_content and return its new id."""
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO raw_content
+                    (source, source_id, url, title, body, author, published_at, raw_json)
+                VALUES
+                    (:source, :source_id, :url, :title, :body, :author, :published_at, :raw_json)
+                """
+            ),
+            {
+                "source": source,
+                "source_id": source_id,
+                "url": url,
+                "title": title,
+                "body": body,
+                "author": author,
+                "published_at": published_at,
+                "raw_json": raw_json,
+            },
+        )
+        return result.lastrowid
+
+
+def get_raw_content_by_source(engine, source: str) -> list[dict]:
+    """Return all raw_content rows for a given source, as a list of dicts."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM raw_content WHERE source = :source"), {"source": source}
+        )
+        return [dict(row._mapping) for row in result]
+
+
+def insert_google_trend(
+    engine, keyword: str, date: str, interest_value: int, geo: str = "IN"
+) -> int:
+    """Insert a row into google_trends and return its new id."""
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO google_trends (keyword, date, interest_value, geo)
+                VALUES (:keyword, :date, :interest_value, :geo)
+                """
+            ),
+            {"keyword": keyword, "date": date, "interest_value": interest_value, "geo": geo},
+        )
+        return result.lastrowid
+
+
+def get_google_trends_by_keyword(engine, keyword: str) -> list[dict]:
+    """Return all google_trends rows for a given keyword, as a list of dicts."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM google_trends WHERE keyword = :keyword"), {"keyword": keyword}
+        )
+        return [dict(row._mapping) for row in result]
