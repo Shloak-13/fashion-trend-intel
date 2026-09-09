@@ -73,6 +73,54 @@ def insert_raw_content(
         return result.lastrowid
 
 
+def get_all_raw_content(engine) -> list[dict]:
+    """Return every raw_content row, as a list of dicts."""
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT * FROM raw_content"))
+        return [dict(row._mapping) for row in result]
+
+
+def insert_keyword(
+    engine, content_id: int, keyword: str, keyword_type: str, confidence: float | None
+) -> int:
+    """Insert a row into keywords and return its new id."""
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO keywords (content_id, keyword, keyword_type, confidence)
+                VALUES (:content_id, :keyword, :keyword_type, :confidence)
+                """
+            ),
+            {
+                "content_id": content_id,
+                "keyword": keyword,
+                "keyword_type": keyword_type,
+                "confidence": confidence,
+            },
+        )
+        return result.lastrowid
+
+
+def get_keywords_by_content_id(engine, content_id: int) -> list[dict]:
+    """Return all keywords rows extracted for a given raw_content id."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM keywords WHERE content_id = :content_id"),
+            {"content_id": content_id},
+        )
+        return [dict(row._mapping) for row in result]
+
+
+def delete_keywords_for_content(engine, content_id: int) -> None:
+    """Delete all keywords rows for a given raw_content id (used to keep
+    re-processing idempotent)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM keywords WHERE content_id = :content_id"), {"content_id": content_id}
+        )
+
+
 def get_raw_content_by_source(engine, source: str) -> list[dict]:
     """Return all raw_content rows for a given source, as a list of dicts."""
     with engine.connect() as conn:

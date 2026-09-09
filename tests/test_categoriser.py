@@ -69,3 +69,16 @@ def test_categorise_keyword_unmatched_is_emerging():
     result = categoriser.categorise_keyword("some_brand_new_micro_trend_2026")
     assert result["category"] is None
     assert result["match_type"] == "emerging"
+
+
+def test_semantic_match_finds_closest_individual_taxonomy_term():
+    # "handbag" isn't in the taxonomy, but is semantically close to "shoulder
+    # bag"/"bag" (Clothing Items) at 0.75 similarity. A category-blob embedding
+    # (all ~50 Clothing Items keywords joined into one string) dilutes this to
+    # 0.28 — nowhere near threshold. Per-keyword nearest-neighbor matching does
+    # not have that problem.
+    assert categoriser.semantic_match("handbag") == "Clothing Items"
+
+
+def test_semantic_match_returns_none_for_unrelated_term():
+    assert categoriser.semantic_match("some_brand_new_micro_trend_2026") is None

@@ -104,24 +104,33 @@ def _embedding_model() -> SentenceTransformer:
 
 
 @lru_cache(maxsize=1)
-def _category_embeddings():
+def _taxonomy_keyword_embeddings():
+    """Embeddings for every individual taxonomy keyword (not a per-category blend).
+
+    A category-level embedding (all ~50 keywords in a category joined into one
+    string) dilutes the signal too much: e.g. "eyewear" vs. the "Clothing Items"
+    blob scores 0.47, well under threshold, even though "eyewear" vs. the single
+    term "sunglasses" scores 0.64. Comparing against individual taxonomy terms
+    and taking the nearest neighbour preserves that signal.
+    """
     model = _embedding_model()
-    categories = list(TAXONOMY.keys())
-    category_text = [" ".join(TAXONOMY[c]) for c in categories]
-    return categories, model.encode(category_text, convert_to_tensor=True)
+    flat = _flat_keywords()
+    keywords = [kw for kw, _ in flat]
+    return flat, model.encode(keywords, convert_to_tensor=True)
 
 
 def semantic_match(keyword: str, threshold: float = SEMANTIC_THRESHOLD) -> str | None:
-    """Return the taxonomy category most semantically similar to keyword, if above threshold."""
+    """Return the taxonomy category of the individual taxonomy term most
+    semantically similar to keyword, if above threshold."""
     model = _embedding_model()
-    categories, category_embeddings = _category_embeddings()
-    keyword_embedding = model.encode(keyword, convert_to_tensor=True)
-    scores = util.cos_sim(keyword_embedding, category_embeddings)[0]
+    flat, keyword_embeddings = _taxonomy_keyword_embeddings()
+    query_embedding = model.encode(keyword, convert_to_tensor=True)
+    scores = util.cos_sim(query_embedding, keyword_embeddings)[0]
     best_idx = int(scores.argmax())
     best_score = float(scores[best_idx])
     if best_score < threshold:
         return None
-    return categories[best_idx]
+    return flat[best_idx][1]
 
 
 def categorise_keyword(keyword: str) -> dict:
@@ -151,5 +160,7 @@ def categorise_keyword(keyword: str) -> dict:
     if category:
         return {"keyword": keyword, "category": category, "match_type": "semantic", "confidence": None}
 
-    logger.info("Keyword '{}' did not match taxonomy — flagged as emerging", keyword)
+    # No per-keyword log here deliberately: this is the common case at scale
+    # (thousands of keywords/day), and logging each one floods the logs. The
+    # caller aggregates and logs a summary instead (see nlp_pipeline.run()).
     return {"keyword": keyword, "category": None, "match_type": "emerging", "confidence": None}

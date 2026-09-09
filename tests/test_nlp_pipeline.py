@@ -1,4 +1,7 @@
+import pytest
+
 from src.processing import nlp_pipeline
+from src.storage import db
 
 FASHION_TEXT_EN = (
     "Oversized blazers are everywhere this fall, paired with wide leg trousers "
@@ -38,3 +41,53 @@ def test_process_document_extracts_keywords_for_english():
     assert result["language"] == "en"
     assert len(result["keywords"]) > 0
     assert result["cleaned_text"] == nlp_pipeline.cleaner.clean_text(FASHION_TEXT_EN)
+
+
+@pytest.fixture
+def db_path(tmp_path):
+    return str(tmp_path / "test_nlp_pipeline.db")
+
+
+def test_process_and_store_content_persists_keywords(db_path):
+    engine = db.init_db(db_path)
+    content_id = db.insert_raw_content(engine, source="news", title=FASHION_TEXT_EN)
+
+    stored = nlp_pipeline.process_and_store_content(engine, content_id, FASHION_TEXT_EN)
+
+    assert len(stored) > 0
+    rows = db.get_keywords_by_content_id(engine, content_id)
+    assert len(rows) == len(stored)
+    assert {r["keyword"] for r in rows} == {kw["keyword"] for kw in stored}
+
+
+def test_process_and_store_content_is_idempotent(db_path):
+    engine = db.init_db(db_path)
+    content_id = db.insert_raw_content(engine, source="news", title=FASHION_TEXT_EN)
+
+    nlp_pipeline.process_and_store_content(engine, content_id, FASHION_TEXT_EN)
+    nlp_pipeline.process_and_store_content(engine, content_id, FASHION_TEXT_EN)
+
+    rows = db.get_keywords_by_content_id(engine, content_id)
+    assert len(rows) == len(nlp_pipeline.extract_keywords(FASHION_TEXT_EN))
+
+
+def test_process_and_store_content_skips_non_english(db_path):
+    engine = db.init_db(db_path)
+    content_id = db.insert_raw_content(engine, source="news", title=FASHION_TEXT_FR)
+
+    stored = nlp_pipeline.process_and_store_content(engine, content_id, FASHION_TEXT_FR)
+
+    assert stored == []
+    assert db.get_keywords_by_content_id(engine, content_id) == []
+
+
+def test_run_processes_all_raw_content(db_path):
+    engine = db.init_db(db_path)
+    id1 = db.insert_raw_content(engine, source="news", title=FASHION_TEXT_EN)
+    id2 = db.insert_raw_content(engine, source="news", title=FASHION_TEXT_FR)
+
+    total_keywords = nlp_pipeline.run(engine=engine)
+
+    assert total_keywords > 0
+    assert len(db.get_keywords_by_content_id(engine, id1)) > 0
+    assert len(db.get_keywords_by_content_id(engine, id2)) == 0
