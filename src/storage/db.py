@@ -200,3 +200,102 @@ def delete_google_trends_by_keyword(engine, keyword: str, geo: str = "IN") -> in
             {"keyword": keyword, "geo": geo},
         )
         return result.rowcount
+
+
+# --- Dashboard query helpers (Phase 4, Trend Radar) ---
+
+
+def get_top_keywords(
+    engine,
+    category: str | None = None,
+    source: str | None = None,
+    published_after: str | None = None,
+    published_before: str | None = None,
+    min_confidence: float = 0.6,
+    min_source_diversity: int = 1,
+    limit: int = 20,
+) -> list[dict]:
+    """Return the top taxonomy-matched keywords ranked by mention count, with
+    source diversity and average match confidence. Always excludes
+    keyword_type='emerging' (those are unmatched/novel terms, not trending
+    taxonomy categories).
+
+    min_confidence filters individual keyword *mentions* (rows), not the
+    per-keyword average — same per-match threshold semantics as
+    categoriser.py's FUZZY_THRESHOLD/SEMANTIC_THRESHOLD. Default 0.6 exists
+    to drop low-confidence KeyBERT bigram artifacts (e.g. "york fashion"
+    from "New York Fashion Week") whose *average* confidence can clear a
+    naive aggregate cutoff even though most individual mentions don't.
+
+    min_source_diversity filters on the aggregated source count (a HAVING
+    clause, not WHERE, since it's evaluated post-GROUP BY) — requiring a
+    keyword to be corroborated by more than one outlet before counting as a
+    real trend, not a single publication's idiosyncratic phrasing. Default 1
+    keeps existing single-source-tolerant behaviour; the dashboard passes 2.
+
+    Filters are optional and combine with AND."""
+    conditions = ["k.keyword_type != 'emerging'", "k.confidence >= :min_confidence"]
+    params: dict = {
+        "limit": limit,
+        "min_confidence": min_confidence,
+        "min_source_diversity": min_source_diversity,
+    }
+
+    if category:
+        conditions.append("k.keyword_type = :category")
+        params["category"] = category
+    if source:
+        conditions.append("rc.source = :source")
+        params["source"] = source
+    if published_after:
+        conditions.append("rc.published_at >= :published_after")
+        params["published_after"] = published_after
+    if published_before:
+        conditions.append("rc.published_at <= :published_before")
+        params["published_before"] = published_before
+
+    where_clause = " AND ".join(conditions)
+
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                f"""
+                SELECT
+                    k.keyword AS keyword,
+                    k.keyword_type AS category,
+                    COUNT(*) AS mention_count,
+                    COUNT(DISTINCT rc.source) AS source_diversity,
+                    AVG(k.confidence) AS avg_confidence
+                FROM keywords k
+                JOIN raw_content rc ON k.content_id = rc.id
+                WHERE {where_clause}
+                GROUP BY k.keyword, k.keyword_type
+                HAVING COUNT(DISTINCT rc.source) >= :min_source_diversity
+                ORDER BY mention_count DESC
+                LIMIT :limit
+                """
+            ),
+            params,
+        )
+        return [dict(row._mapping) for row in result]
+
+
+def get_available_sources(engine) -> list[str]:
+    """Return the distinct raw_content sources currently ingested, sorted."""
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT DISTINCT source FROM raw_content ORDER BY source"))
+        return [row[0] for row in result]
+
+
+def get_all_trend_signals(engine) -> list[dict]:
+    """Return every trend_signals row (real Google-Trends-backed momentum data)."""
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT * FROM trend_signals ORDER BY momentum_score DESC"))
+        return [dict(row._mapping) for row in result]
+
+
+def get_last_updated(engine) -> str | None:
+    """Return the most recent raw_content.ingested_at timestamp, or None if
+    raw_content is empty."""
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT MAX(ingested_at) FROM raw_content")).scalar()

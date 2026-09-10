@@ -40,3 +40,7 @@ langdetect==1.0.9
 ipykernel==7.3.0
 nbconvert==7.17.1
 jupyter_client==8.10.0
+
+# Dashboard (Phase 4)
+streamlit==1.63.0
+plotly==7.0.0

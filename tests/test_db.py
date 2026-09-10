@@ -141,3 +141,157 @@ def test_delete_raw_content_by_source_also_deletes_its_keywords(db_path):
     db.delete_raw_content_by_source(engine, "news")
 
     assert db.get_keywords_by_content_id(engine, content_id) == []
+
+
+# --- Dashboard query helpers (Phase 4, Trend Radar) ---
+
+
+def _seed_dashboard_data(engine):
+    """Two 'oversized' mentions (Silhouettes, sources news+whowhatwear) and
+    one 'quiet luxury' mention (Aesthetics, source news only)."""
+    c1 = db.insert_raw_content(engine, source="news", url="https://a.com/1", title="a", published_at="2026-09-01T00:00:00Z")
+    c2 = db.insert_raw_content(engine, source="whowhatwear", url="https://a.com/2", title="b", published_at="2026-09-05T00:00:00Z")
+    c3 = db.insert_raw_content(engine, source="news", url="https://a.com/3", title="c", published_at="2026-09-08T00:00:00Z")
+    db.insert_keyword(engine, content_id=c1, keyword="oversized", keyword_type="Silhouettes", confidence=1.0)
+    db.insert_keyword(engine, content_id=c2, keyword="oversized", keyword_type="Silhouettes", confidence=0.8)
+    db.insert_keyword(engine, content_id=c3, keyword="quiet luxury", keyword_type="Aesthetics", confidence=0.6)
+    db.insert_keyword(engine, content_id=c3, keyword="random", keyword_type="emerging", confidence=None)
+
+
+def test_get_top_keywords_ranks_by_mention_count(db_path):
+    engine = db.init_db(db_path)
+    _seed_dashboard_data(engine)
+
+    rows = db.get_top_keywords(engine)
+
+    assert rows[0]["keyword"] == "oversized"
+    assert rows[0]["mention_count"] == 2
+    assert rows[0]["source_diversity"] == 2
+    assert rows[0]["avg_confidence"] == pytest.approx(0.9)
+    assert rows[0]["category"] == "Silhouettes"
+    # "emerging" keywords are never included, regardless of mention count
+    assert all(r["keyword"] != "random" for r in rows)
+
+
+def test_get_top_keywords_excludes_mentions_below_confidence_threshold(db_path):
+    engine = db.init_db(db_path)
+    c1 = db.insert_raw_content(engine, source="news", url="https://b.com/1", title="x")
+    c2 = db.insert_raw_content(engine, source="news", url="https://b.com/2", title="y")
+    # A bigram artifact: several low-confidence mentions that shouldn't
+    # count as real signal, e.g. "york fashion" from "New York Fashion Week".
+    db.insert_keyword(engine, content_id=c1, keyword="york fashion", keyword_type="Aesthetics", confidence=0.45)
+    db.insert_keyword(engine, content_id=c2, keyword="york fashion", keyword_type="Aesthetics", confidence=0.53)
+
+    rows = db.get_top_keywords(engine)
+
+    assert rows == []
+
+
+def test_get_top_keywords_default_confidence_threshold_is_0_6(db_path):
+    engine = db.init_db(db_path)
+    c1 = db.insert_raw_content(engine, source="news", url="https://b.com/1", title="x")
+    db.insert_keyword(engine, content_id=c1, keyword="borderline", keyword_type="Aesthetics", confidence=0.599)
+
+    assert db.get_top_keywords(engine) == []
+    assert len(db.get_top_keywords(engine, min_confidence=0.5)) == 1
+
+
+def test_get_top_keywords_excludes_below_min_source_diversity(db_path):
+    engine = db.init_db(db_path)
+    c1 = db.insert_raw_content(engine, source="news", url="https://c.com/1", title="x")
+    c2 = db.insert_raw_content(engine, source="news", url="https://c.com/2", title="y")
+    c3 = db.insert_raw_content(engine, source="whowhatwear", url="https://c.com/3", title="z")
+    # "single_source" mentioned twice but only ever by "news" -- a real
+    # signal shouldn't need to come from just one outlet to count as trending.
+    db.insert_keyword(engine, content_id=c1, keyword="single_source", keyword_type="Aesthetics", confidence=0.9)
+    db.insert_keyword(engine, content_id=c2, keyword="single_source", keyword_type="Aesthetics", confidence=0.9)
+    db.insert_keyword(engine, content_id=c1, keyword="multi_source", keyword_type="Aesthetics", confidence=0.9)
+    db.insert_keyword(engine, content_id=c3, keyword="multi_source", keyword_type="Aesthetics", confidence=0.9)
+
+    # Default (min_source_diversity=1) includes both.
+    default_rows = {r["keyword"] for r in db.get_top_keywords(engine)}
+    assert default_rows == {"single_source", "multi_source"}
+
+    # min_source_diversity=2 drops the single-source keyword.
+    filtered_rows = {r["keyword"] for r in db.get_top_keywords(engine, min_source_diversity=2)}
+    assert filtered_rows == {"multi_source"}
+
+
+def test_get_top_keywords_filters_by_category(db_path):
+    engine = db.init_db(db_path)
+    _seed_dashboard_data(engine)
+
+    rows = db.get_top_keywords(engine, category="Aesthetics")
+
+    assert [r["keyword"] for r in rows] == ["quiet luxury"]
+
+
+def test_get_top_keywords_filters_by_source(db_path):
+    engine = db.init_db(db_path)
+    _seed_dashboard_data(engine)
+
+    rows = db.get_top_keywords(engine, source="whowhatwear")
+
+    assert [r["keyword"] for r in rows] == ["oversized"]
+    assert rows[0]["mention_count"] == 1
+
+
+def test_get_top_keywords_filters_by_published_date_range(db_path):
+    engine = db.init_db(db_path)
+    _seed_dashboard_data(engine)
+
+    rows = db.get_top_keywords(engine, published_after="2026-09-04", published_before="2026-09-06")
+
+    assert [r["keyword"] for r in rows] == ["oversized"]
+    assert rows[0]["mention_count"] == 1
+
+
+def test_get_top_keywords_respects_limit(db_path):
+    engine = db.init_db(db_path)
+    _seed_dashboard_data(engine)
+
+    rows = db.get_top_keywords(engine, limit=1)
+
+    assert len(rows) == 1
+
+
+def test_get_top_keywords_empty_when_no_data(db_path):
+    engine = db.init_db(db_path)
+    assert db.get_top_keywords(engine) == []
+
+
+def test_get_available_sources_returns_distinct_sorted_sources(db_path):
+    engine = db.init_db(db_path)
+    db.insert_raw_content(engine, source="news", title="a")
+    db.insert_raw_content(engine, source="news", title="b")
+    db.insert_raw_content(engine, source="whowhatwear", title="c")
+
+    assert db.get_available_sources(engine) == ["news", "whowhatwear"]
+
+
+def test_get_all_trend_signals_returns_rows(db_path):
+    engine = db.init_db(db_path)
+    with engine.begin() as conn:
+        from sqlalchemy import text
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO trend_signals (keyword, date, mention_count, momentum_score, source_diversity)
+                VALUES ('oversized', '2026-09-01', 65, 0.05, 1)
+                """
+            )
+        )
+
+    rows = db.get_all_trend_signals(engine)
+    assert len(rows) == 1
+    assert rows[0]["keyword"] == "oversized"
+    assert rows[0]["momentum_score"] == 0.05
+
+
+def test_get_last_updated_returns_max_ingested_at(db_path):
+    engine = db.init_db(db_path)
+    assert db.get_last_updated(engine) is None
+
+    db.insert_raw_content(engine, source="news", title="a")
+    assert db.get_last_updated(engine) is not None
