@@ -299,3 +299,84 @@ def get_last_updated(engine) -> str | None:
     raw_content is empty."""
     with engine.connect() as conn:
         return conn.execute(text("SELECT MAX(ingested_at) FROM raw_content")).scalar()
+
+
+# --- Dashboard query helpers (Phase 4, Page 2: Keyword Deep Dive) ---
+
+
+def get_all_keyword_names(engine) -> list[str]:
+    """Return every distinct keyword in the keywords table (matched and
+    emerging alike — this is for a free-text search box, not a curated
+    trending list), most-mentioned first."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT keyword, COUNT(*) AS n
+                FROM keywords
+                GROUP BY keyword
+                ORDER BY n DESC, keyword ASC
+                """
+            )
+        )
+        return [row[0] for row in result]
+
+
+def get_keyword_time_series(engine, keyword: str) -> list[dict]:
+    """Return daily mention counts for a keyword across all sources, ordered
+    by date. Grouped on raw_content.published_at (real dates), not
+    keywords.extracted_at (always "now" — see get_top_keywords for why)."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT date(rc.published_at) AS date, COUNT(*) AS mention_count
+                FROM keywords k
+                JOIN raw_content rc ON k.content_id = rc.id
+                WHERE LOWER(k.keyword) = LOWER(:keyword) AND rc.published_at IS NOT NULL
+                GROUP BY date(rc.published_at)
+                ORDER BY date
+                """
+            ),
+            {"keyword": keyword},
+        )
+        return [dict(row._mapping) for row in result]
+
+
+def get_keyword_source_breakdown(engine, keyword: str) -> list[dict]:
+    """Return mention counts per source for a keyword, most-mentioned first."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT rc.source AS source, COUNT(*) AS mention_count
+                FROM keywords k
+                JOIN raw_content rc ON k.content_id = rc.id
+                WHERE LOWER(k.keyword) = LOWER(:keyword)
+                GROUP BY rc.source
+                ORDER BY mention_count DESC
+                """
+            ),
+            {"keyword": keyword},
+        )
+        return [dict(row._mapping) for row in result]
+
+
+def get_keyword_recent_mentions(engine, keyword: str, limit: int = 5) -> list[dict]:
+    """Return the most recent raw_content rows mentioning a keyword (title,
+    url, source, author, published_at), newest first."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT DISTINCT rc.title, rc.url, rc.source, rc.author, rc.published_at
+                FROM keywords k
+                JOIN raw_content rc ON k.content_id = rc.id
+                WHERE LOWER(k.keyword) = LOWER(:keyword)
+                ORDER BY rc.published_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"keyword": keyword, "limit": limit},
+        )
+        return [dict(row._mapping) for row in result]

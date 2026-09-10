@@ -295,3 +295,93 @@ def test_get_last_updated_returns_max_ingested_at(db_path):
 
     db.insert_raw_content(engine, source="news", title="a")
     assert db.get_last_updated(engine) is not None
+
+
+# --- Dashboard query helpers (Phase 4, Page 2: Keyword Deep Dive) ---
+
+
+def _seed_deep_dive_data(engine):
+    """'oversized' mentioned 3x (2 on 2026-09-01 across news+whowhatwear, 1 on
+    2026-09-03 on hypebeast); 'denim' mentioned once, unrelated."""
+    c1 = db.insert_raw_content(
+        engine, source="news", url="https://a.com/1", title="Piece One",
+        author="Jane Doe", published_at="2026-09-01T10:00:00Z",
+    )
+    c2 = db.insert_raw_content(
+        engine, source="whowhatwear", url="https://a.com/2", title="Piece Two",
+        author="Sam Lee", published_at="2026-09-01T14:00:00Z",
+    )
+    c3 = db.insert_raw_content(
+        engine, source="hypebeast", url="https://a.com/3", title="Piece Three",
+        author="Ana Kim", published_at="2026-09-03T09:00:00Z",
+    )
+    c4 = db.insert_raw_content(engine, source="news", url="https://a.com/4", title="Unrelated")
+    db.insert_keyword(engine, content_id=c1, keyword="oversized", keyword_type="Silhouettes", confidence=1.0)
+    db.insert_keyword(engine, content_id=c2, keyword="oversized", keyword_type="Silhouettes", confidence=0.9)
+    db.insert_keyword(engine, content_id=c3, keyword="oversized", keyword_type="Silhouettes", confidence=0.8)
+    db.insert_keyword(engine, content_id=c4, keyword="denim", keyword_type="Patterns & Textures", confidence=1.0)
+
+
+def test_get_all_keyword_names_returns_distinct_keywords_sorted_by_frequency(db_path):
+    engine = db.init_db(db_path)
+    _seed_deep_dive_data(engine)
+
+    names = db.get_all_keyword_names(engine)
+
+    assert names == ["oversized", "denim"]
+
+
+def test_get_keyword_time_series_groups_by_published_date(db_path):
+    engine = db.init_db(db_path)
+    _seed_deep_dive_data(engine)
+
+    series = db.get_keyword_time_series(engine, "oversized")
+
+    assert series == [
+        {"date": "2026-09-01", "mention_count": 2},
+        {"date": "2026-09-03", "mention_count": 1},
+    ]
+
+
+def test_get_keyword_time_series_is_case_insensitive_and_empty_for_unknown(db_path):
+    engine = db.init_db(db_path)
+    _seed_deep_dive_data(engine)
+
+    assert db.get_keyword_time_series(engine, "OVERSIZED") == [
+        {"date": "2026-09-01", "mention_count": 2},
+        {"date": "2026-09-03", "mention_count": 1},
+    ]
+    assert db.get_keyword_time_series(engine, "nonexistent") == []
+
+
+def test_get_keyword_source_breakdown_counts_per_source(db_path):
+    engine = db.init_db(db_path)
+    _seed_deep_dive_data(engine)
+
+    breakdown = db.get_keyword_source_breakdown(engine, "oversized")
+
+    assert {r["source"]: r["mention_count"] for r in breakdown} == {
+        "news": 1,
+        "whowhatwear": 1,
+        "hypebeast": 1,
+    }
+
+
+def test_get_keyword_recent_mentions_orders_by_published_date_desc(db_path):
+    engine = db.init_db(db_path)
+    _seed_deep_dive_data(engine)
+
+    mentions = db.get_keyword_recent_mentions(engine, "oversized", limit=2)
+
+    assert len(mentions) == 2
+    assert mentions[0]["title"] == "Piece Three"
+    assert mentions[0]["url"] == "https://a.com/3"
+    assert mentions[0]["source"] == "hypebeast"
+    assert mentions[1]["title"] == "Piece Two"
+
+
+def test_get_keyword_recent_mentions_empty_for_unknown_keyword(db_path):
+    engine = db.init_db(db_path)
+    _seed_deep_dive_data(engine)
+
+    assert db.get_keyword_recent_mentions(engine, "nonexistent") == []
