@@ -15,6 +15,7 @@ htmlcov/
 # Data
 data/raw/*
 data/processed/*
+data/exports/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/exports/.gitkeep
