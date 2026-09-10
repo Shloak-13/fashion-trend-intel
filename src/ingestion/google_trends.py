@@ -50,6 +50,9 @@ def run(keywords: list[str] | None = None, geo: str = DEFAULT_GEO) -> int:
     for i, keyword in enumerate(keywords):
         try:
             points = fetch_keyword_interest(pytrends, keyword, geo=geo)
+            # Re-fetches the full rolling window every run, so replace (not
+            # accumulate) this keyword's existing rows to stay idempotent.
+            db.delete_google_trends_by_keyword(engine, keyword, geo=geo)
             for point in points:
                 db.insert_google_trend(
                     engine,

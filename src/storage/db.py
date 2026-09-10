@@ -142,6 +142,18 @@ def delete_keywords_for_content(engine, content_id: int) -> None:
         )
 
 
+def get_existing_urls(engine, source: str) -> set[str]:
+    """Return the set of URLs already ingested for a source, so ingesters can
+    filter out duplicates before inserting (raw_content has no unique
+    constraint on url, and insert_raw_content doesn't check for one)."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT url FROM raw_content WHERE source = :source AND url IS NOT NULL"),
+            {"source": source},
+        )
+        return {row[0] for row in result}
+
+
 def get_raw_content_by_source(engine, source: str) -> list[dict]:
     """Return all raw_content rows for a given source, as a list of dicts."""
     with engine.connect() as conn:
@@ -175,3 +187,16 @@ def get_google_trends_by_keyword(engine, keyword: str) -> list[dict]:
             text("SELECT * FROM google_trends WHERE keyword = :keyword"), {"keyword": keyword}
         )
         return [dict(row._mapping) for row in result]
+
+
+def delete_google_trends_by_keyword(engine, keyword: str, geo: str = "IN") -> int:
+    """Delete all google_trends rows for a given keyword/geo. Used to keep
+    re-ingestion idempotent (google_trends.py re-fetches the full rolling
+    window every run, so stale rows should be replaced, not accumulated).
+    Returns the number of rows deleted."""
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("DELETE FROM google_trends WHERE keyword = :keyword AND geo = :geo"),
+            {"keyword": keyword, "geo": geo},
+        )
+        return result.rowcount

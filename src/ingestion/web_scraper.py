@@ -257,8 +257,19 @@ def run(site: str, limit: int = LIMIT) -> int:
     deduped = dedupe_content(articles)
     logger.info("{} articles after dedup (from {} raw)", len(deduped), len(articles))
 
+    # raw_content has no unique constraint on url, so without this check a
+    # re-run (e.g. the sitemap's rolling window still containing yesterday's
+    # articles) inserts duplicate rows for anything already ingested.
+    existing_urls = db.get_existing_urls(engine, site)
+    new_articles = [a for a in deduped if a.get("url") not in existing_urls]
+    logger.info(
+        "{} new articles to insert ({} already in raw_content)",
+        len(new_articles),
+        len(deduped) - len(new_articles),
+    )
+
     rows_inserted = 0
-    for article in deduped:
+    for article in new_articles:
         try:
             db.insert_raw_content(engine, source=site, **article)
             rows_inserted += 1

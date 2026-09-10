@@ -47,6 +47,17 @@ def test_insert_and_retrieve_raw_content(db_path):
     assert rows[0]["title"] == "Loving oversized blazers rn"
 
 
+def test_get_existing_urls_returns_only_that_sources_urls(db_path):
+    engine = db.init_db(db_path)
+    db.insert_raw_content(engine, source="news", url="https://a.com/1", title="one")
+    db.insert_raw_content(engine, source="news", url="https://a.com/2", title="two")
+    db.insert_raw_content(engine, source="reddit", url="https://reddit.com/x", title="three")
+
+    urls = db.get_existing_urls(engine, "news")
+
+    assert urls == {"https://a.com/1", "https://a.com/2"}
+
+
 def test_insert_and_retrieve_google_trend(db_path):
     engine = db.init_db(db_path)
     db.insert_google_trend(
@@ -56,6 +67,19 @@ def test_insert_and_retrieve_google_trend(db_path):
     rows = db.get_google_trends_by_keyword(engine, "oversized")
     assert len(rows) == 1
     assert rows[0]["interest_value"] == 72
+
+
+def test_delete_google_trends_by_keyword_removes_only_that_keyword(db_path):
+    engine = db.init_db(db_path)
+    db.insert_google_trend(engine, keyword="oversized", date="2026-09-01", interest_value=72, geo="IN")
+    db.insert_google_trend(engine, keyword="oversized", date="2026-09-02", interest_value=70, geo="IN")
+    db.insert_google_trend(engine, keyword="cargo pants", date="2026-09-01", interest_value=50, geo="IN")
+
+    deleted = db.delete_google_trends_by_keyword(engine, "oversized", geo="IN")
+
+    assert deleted == 2
+    assert db.get_google_trends_by_keyword(engine, "oversized") == []
+    assert len(db.get_google_trends_by_keyword(engine, "cargo pants")) == 1
 
 
 def test_get_all_raw_content_returns_every_row(db_path):

@@ -113,8 +113,20 @@ def run(queries: list[str] | None = None) -> int:
     deduped = dedupe_content(all_articles)
     logger.info("{} articles after dedup (from {} raw)", len(deduped), len(all_articles))
 
+    # raw_content has no unique constraint on url, so without this check a
+    # re-run inserts duplicate rows for any article already ingested by a
+    # previous run (only within-run duplicates are caught by dedupe_content
+    # above).
+    existing_urls = db.get_existing_urls(engine, "news")
+    new_articles = [a for a in deduped if a.get("url") not in existing_urls]
+    logger.info(
+        "{} new articles to insert ({} already in raw_content)",
+        len(new_articles),
+        len(deduped) - len(new_articles),
+    )
+
     rows_inserted = 0
-    for article in deduped:
+    for article in new_articles:
         try:
             db.insert_raw_content(engine, source="news", **article)
             rows_inserted += 1
