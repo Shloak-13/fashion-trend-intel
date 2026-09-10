@@ -6,7 +6,23 @@ Built as a portfolio project demonstrating end-to-end pipeline ownership: ingest
 
 ## Status
 
-Phases 1–3 of the build (foundation, NLP processing, ingestion sources) are complete. The Streamlit dashboard (Phase 4) has not been built yet — right now this is a working pipeline with a SQLite database and a results notebook, not a deployed app.
+Phases 1–3 of the build (foundation, NLP processing, ingestion sources) are complete. Phase 4 (Streamlit dashboard) is in progress — Page 1 (Trend Radar) and Page 2 (Keyword Deep Dive) are built and working against real data; Pages 3–6 (Category Analysis, Colour Trends, Brand Monitor, Raw Data Explorer) are not yet built.
+
+## Dashboard Preview
+
+**Page 1 — Trend Radar:** top trending keywords ranked by real mention count and source diversity, with filters for category, source, and date range.
+
+![Trend Radar — Top Trending Keywords table with filters](screenshots/trend-radar-top-keywords.jpg)
+
+Trend Map bubble chart (mention volume × match confidence × source diversity × category) and the Momentum section, sourced separately from real Google Trends data:
+
+![Trend Radar — Trend Map bubble chart and Momentum table](screenshots/trend-radar-bubble-momentum.jpg)
+
+**Page 2 — Keyword Deep Dive:** searchable across all ingested keywords, with a mention-volume time series, source breakdown, and linked recent mentions.
+
+![Keyword Deep Dive — search results and time series for "fashion"](screenshots/keyword-deep-dive.jpg)
+
+More screenshots will be added here as Pages 3–6 are built — see [`screenshots/README.md`](screenshots/README.md) for how to add one.
 
 ## Tech stack
 
@@ -14,7 +30,8 @@ Phases 1–3 of the build (foundation, NLP processing, ingestion sources) are co
 - **Storage:** SQLite (via SQLAlchemy)
 - **Ingestion:** `pytrends` (Google Trends), `praw` (Reddit API), `newsapi-python` (NewsAPI), `requests` + `beautifulsoup4` + `protego` (web scraping, robots.txt-compliant)
 - **NLP:** `keybert` + `sentence-transformers` (keyword extraction, semantic taxonomy matching), `rapidfuzz` (fuzzy matching), `langdetect` (language filtering)
-- **Testing:** `pytest`, test-driven throughout (67 tests)
+- **Dashboard:** `streamlit` + `plotly`
+- **Testing:** `pytest`, test-driven throughout (87 tests)
 - **Logging:** `loguru`
 - **Notebooks:** Jupyter, via `ipykernel`/`nbconvert`
 
@@ -67,13 +84,19 @@ python -m src.processing.nlp_pipeline    # keyword extraction + taxonomy categor
 python -m src.processing.scorer          # momentum scoring on Google Trends data
 ```
 
-**6. Explore the results**
+**6. Run the dashboard**
+```bash
+streamlit run src/dashboard/app.py
+```
+Opens at `http://localhost:8501`. Page 2 (Keyword Deep Dive) is auto-discovered from `src/dashboard/pages/` and appears in the sidebar nav.
+
+**7. Explore the results directly**
 ```bash
 jupyter notebook notebooks/02_nlp_experiments.ipynb
 ```
 Or query `data/fashion_trends.db` directly (e.g. `sqlite3 data/fashion_trends.db`).
 
-**7. Run the tests**
+**8. Run the tests**
 ```bash
 pytest tests/ -v
 ```
@@ -88,15 +111,17 @@ pytest tests/ -v
 - **No brand-name recognition yet.** Named-entity recognition for brands (Section 6.2, Step 4 of the original spec) is deferred — brand-heavy articles often produce zero taxonomy matches even when clearly fashion-relevant, since brand names aren't in the taxonomy.
 - **Momentum scoring is tuned for document counts, not Google's 0–100 interest scale.** Trend classification bands (`rising`, `peak`, etc.) assume mention counts in the hundreds/thousands; single-source Google Trends signals mostly classify as `stable`/`emerging` until Reddit/News mention volume is flowing at comparable scale.
 - **Small early dataset.** With ingestion only recently started, there isn't yet enough history for momentum scoring to be highly reliable — CLAUDE.md flagged this as an expected v1 limitation, and it still applies.
-- **No dashboard yet.** Phase 4 (Streamlit) hasn't been built — results currently live in the SQLite database and the Jupyter notebook, not a deployed UI.
+- **Dashboard is partial.** Only Pages 1–2 of the planned 6-page Streamlit dashboard are built; the rest of the results still live only in the SQLite database and the Jupyter notebook.
 
 ## Project structure
 
 ```
 src/
-├── ingestion/       # Google Trends, Reddit, NewsAPI, web scraper (3 sites)
+├── ingestion/        # Google Trends, Reddit, NewsAPI, web scraper (3 sites)
 ├── processing/       # cleaning, NLP pipeline, taxonomy categoriser, momentum scorer
-└── storage/          # SQLite schema + connection/query helpers
+├── storage/          # SQLite schema + connection/query helpers
+└── dashboard/        # Streamlit app (app.py = Page 1; pages/ = Pages 2+)
 notebooks/            # results and findings, narrated
-tests/                 # pytest suite (67 tests, TDD throughout)
+screenshots/          # dashboard screenshots used in this README
+tests/                 # pytest suite (87 tests, TDD throughout)
 ```
