@@ -26,3 +26,8 @@ data/exports/*
 
 # OS
 .DS_Store
+
+# Unrelated stray files (not part of this project)
+Sample - Superstore.csv
+Superstore_Cleaned.xlsx
+Shloak_ProjectBrief_FashionDashboard.docx

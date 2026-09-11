@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import text
 
 from src.storage import db
 
@@ -383,5 +384,104 @@ def test_get_keyword_recent_mentions_orders_by_published_date_desc(db_path):
 def test_get_keyword_recent_mentions_empty_for_unknown_keyword(db_path):
     engine = db.init_db(db_path)
     _seed_deep_dive_data(engine)
+
+
+# --- Dashboard query helpers (Phase 4, Page 3: Category Analysis) ---
+
+
+def _seed_category_data(engine):
+    """'oversized' (Silhouettes) mentioned 2x on 2026-09-01 (news + whowhatwear);
+    'draped' (Silhouettes) mentioned once on 2026-09-08 (news only);
+    'quiet luxury' (Aesthetics) mentioned once on 2026-09-01 (news only)."""
+    c1 = db.insert_raw_content(engine, source="news", url="https://a.com/1", title="a", published_at="2026-09-01T00:00:00Z")
+    c2 = db.insert_raw_content(engine, source="whowhatwear", url="https://a.com/2", title="b", published_at="2026-09-01T00:00:00Z")
+    c3 = db.insert_raw_content(engine, source="news", url="https://a.com/3", title="c", published_at="2026-09-08T00:00:00Z")
+    c4 = db.insert_raw_content(engine, source="news", url="https://a.com/4", title="d", published_at="2026-09-01T00:00:00Z")
+    db.insert_keyword(engine, content_id=c1, keyword="oversized", keyword_type="Silhouettes", confidence=1.0)
+    db.insert_keyword(engine, content_id=c2, keyword="oversized", keyword_type="Silhouettes", confidence=0.8)
+    db.insert_keyword(engine, content_id=c3, keyword="draped", keyword_type="Silhouettes", confidence=0.9)
+    db.insert_keyword(engine, content_id=c4, keyword="quiet luxury", keyword_type="Aesthetics", confidence=0.7)
+
+
+def test_get_keywords_by_category_ranks_by_mention_count(db_path):
+    engine = db.init_db(db_path)
+    _seed_category_data(engine)
+
+    rows = db.get_keywords_by_category(engine, "Silhouettes")
+
+    assert [r["keyword"] for r in rows] == ["oversized", "draped"]
+    assert rows[0]["mention_count"] == 2
+    assert rows[0]["source_diversity"] == 2
+    assert rows[0]["momentum_score"] is None
+
+
+def test_get_keywords_by_category_only_returns_that_category(db_path):
+    engine = db.init_db(db_path)
+    _seed_category_data(engine)
+
+    rows = db.get_keywords_by_category(engine, "Aesthetics")
+
+    assert [r["keyword"] for r in rows] == ["quiet luxury"]
+
+
+def test_get_keywords_by_category_includes_momentum_score_when_available(db_path):
+    engine = db.init_db(db_path)
+    _seed_category_data(engine)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO trend_signals (keyword, date, mention_count, momentum_score, source_diversity)
+                VALUES ('oversized', '2026-08-31', 66, 0.0522, 1)
+                """
+            )
+        )
+
+    rows = db.get_keywords_by_category(engine, "Silhouettes")
+
+    assert rows[0]["keyword"] == "oversized"
+    assert rows[0]["momentum_score"] == pytest.approx(0.0522)
+    assert rows[1]["momentum_score"] is None
+
+
+def test_get_keywords_by_category_respects_limit(db_path):
+    engine = db.init_db(db_path)
+    _seed_category_data(engine)
+
+    rows = db.get_keywords_by_category(engine, "Silhouettes", limit=1)
+
+    assert len(rows) == 1
+
+
+def test_get_keywords_by_category_empty_when_no_data(db_path):
+    engine = db.init_db(db_path)
+    assert db.get_keywords_by_category(engine, "Silhouettes") == []
+
+
+def test_get_category_week_heatmap_groups_by_category_and_week(db_path):
+    engine = db.init_db(db_path)
+    _seed_category_data(engine)
+
+    rows = db.get_category_week_heatmap(engine)
+
+    by_key = {(r["category"], r["week"]): r["mention_count"] for r in rows}
+    # 2026-09-01 and 2026-09-08 fall in different SQLite %W weeks (strftime
+    # '%W' counts Mondays since Jan 1 -- not ISO-8601 week numbering).
+    assert by_key[("Silhouettes", "2026-W35")] == 2  # the two 09-01 "oversized" mentions
+    assert by_key[("Silhouettes", "2026-W36")] == 1  # the 09-08 "draped" mention
+    assert by_key[("Aesthetics", "2026-W35")] == 1
+
+
+def test_get_category_week_heatmap_excludes_emerging(db_path):
+    engine = db.init_db(db_path)
+    c1 = db.insert_raw_content(engine, source="news", url="https://c.com/1", title="x", published_at="2026-09-01T00:00:00Z")
+    db.insert_keyword(engine, content_id=c1, keyword="novelty term", keyword_type="emerging", confidence=0.9)
+
+    assert db.get_category_week_heatmap(engine) == []
+
+
+def test_get_category_week_heatmap_empty_when_no_data(db_path):
+    engine = db.init_db(db_path)
+    assert db.get_category_week_heatmap(engine) == []
 
     assert db.get_keyword_recent_mentions(engine, "nonexistent") == []

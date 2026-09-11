@@ -362,6 +362,68 @@ def get_keyword_source_breakdown(engine, keyword: str) -> list[dict]:
         return [dict(row._mapping) for row in result]
 
 
+def get_keywords_by_category(
+    engine, category: str, min_confidence: float = 0.6, limit: int = 50
+) -> list[dict]:
+    """Return taxonomy-matched keywords in one category, ranked by mention
+    count, with source diversity and the most recent real momentum_score for
+    that keyword (NULL for the vast majority of keywords, which only have
+    Google-Trends-backed momentum if they're one of the seeded keywords --
+    see trend_signals). Same min_confidence semantics as get_top_keywords."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT
+                    k.keyword AS keyword,
+                    COUNT(*) AS mention_count,
+                    COUNT(DISTINCT rc.source) AS source_diversity,
+                    AVG(k.confidence) AS avg_confidence,
+                    (
+                        SELECT ts.momentum_score FROM trend_signals ts
+                        WHERE ts.keyword = k.keyword
+                        ORDER BY ts.date DESC
+                        LIMIT 1
+                    ) AS momentum_score
+                FROM keywords k
+                JOIN raw_content rc ON k.content_id = rc.id
+                WHERE k.keyword_type = :category AND k.confidence >= :min_confidence
+                GROUP BY k.keyword
+                ORDER BY mention_count DESC
+                LIMIT :limit
+                """
+            ),
+            {"category": category, "min_confidence": min_confidence, "limit": limit},
+        )
+        return [dict(row._mapping) for row in result]
+
+
+def get_category_week_heatmap(engine, min_confidence: float = 0.6) -> list[dict]:
+    """Return mention counts grouped by taxonomy category and week (SQLite
+    strftime '%Y-W%W' -- Monday-anchored week-of-year, not ISO-8601 week
+    numbering). Excludes 'emerging' keywords, same as get_top_keywords."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT
+                    k.keyword_type AS category,
+                    strftime('%Y-W%W', rc.published_at) AS week,
+                    COUNT(*) AS mention_count
+                FROM keywords k
+                JOIN raw_content rc ON k.content_id = rc.id
+                WHERE k.keyword_type != 'emerging'
+                    AND k.confidence >= :min_confidence
+                    AND rc.published_at IS NOT NULL
+                GROUP BY k.keyword_type, week
+                ORDER BY week, category
+                """
+            ),
+            {"min_confidence": min_confidence},
+        )
+        return [dict(row._mapping) for row in result]
+
+
 def get_keyword_recent_mentions(engine, keyword: str, limit: int = 5) -> list[dict]:
     """Return the most recent raw_content rows mentioning a keyword (title,
     url, source, author, published_at), newest first."""
