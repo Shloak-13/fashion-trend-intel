@@ -658,4 +658,94 @@ def test_get_brand_keyword_cooccurrence_empty_for_unknown_brand(db_path):
     engine = db.init_db(db_path)
     assert db.get_brand_keyword_cooccurrence(engine, "Nonexistent") == []
 
+
+# --- Dashboard query helpers (Phase 4, Page 6: Raw Data Explorer) ---
+
+
+def _seed_raw_content_explorer(engine):
+    db.insert_raw_content(
+        engine, source="news", url="https://a.com/1", title="Oversized blazers trend up",
+        author="Jane Doe", published_at="2026-09-01T00:00:00Z",
+    )
+    db.insert_raw_content(
+        engine, source="reddit", url="https://a.com/2", title="Loving my new denim jacket",
+        author="throwaway1", published_at="2026-09-05T00:00:00Z",
+    )
+    db.insert_raw_content(
+        engine, source="news", url="https://a.com/3", title="Quiet luxury takes over runways",
+        author="Sam Lee", published_at="2026-09-08T00:00:00Z",
+    )
+
+
+def test_get_raw_content_filtered_returns_all_with_no_filters(db_path):
+    engine = db.init_db(db_path)
+    _seed_raw_content_explorer(engine)
+
+    rows = db.get_raw_content_filtered(engine)
+
+    assert len(rows) == 3
+
+
+def test_get_raw_content_filtered_orders_newest_published_first(db_path):
+    engine = db.init_db(db_path)
+    _seed_raw_content_explorer(engine)
+
+    rows = db.get_raw_content_filtered(engine)
+
+    assert [r["title"] for r in rows] == [
+        "Quiet luxury takes over runways",
+        "Loving my new denim jacket",
+        "Oversized blazers trend up",
+    ]
+
+
+def test_get_raw_content_filtered_by_source(db_path):
+    engine = db.init_db(db_path)
+    _seed_raw_content_explorer(engine)
+
+    rows = db.get_raw_content_filtered(engine, source="reddit")
+
+    assert [r["title"] for r in rows] == ["Loving my new denim jacket"]
+
+
+def test_get_raw_content_filtered_by_date_range(db_path):
+    engine = db.init_db(db_path)
+    _seed_raw_content_explorer(engine)
+
+    rows = db.get_raw_content_filtered(engine, published_after="2026-09-04", published_before="2026-09-06")
+
+    assert [r["title"] for r in rows] == ["Loving my new denim jacket"]
+
+
+def test_get_raw_content_filtered_by_search_matches_title_or_body(db_path):
+    engine = db.init_db(db_path)
+    _seed_raw_content_explorer(engine)
+
+    rows = db.get_raw_content_filtered(engine, search="denim")
+
+    assert [r["title"] for r in rows] == ["Loving my new denim jacket"]
+
+
+def test_get_raw_content_filtered_search_is_case_insensitive(db_path):
+    engine = db.init_db(db_path)
+    _seed_raw_content_explorer(engine)
+
+    rows = db.get_raw_content_filtered(engine, search="QUIET LUXURY")
+
+    assert [r["title"] for r in rows] == ["Quiet luxury takes over runways"]
+
+
+def test_get_raw_content_filtered_combines_filters_with_and(db_path):
+    engine = db.init_db(db_path)
+    _seed_raw_content_explorer(engine)
+
+    rows = db.get_raw_content_filtered(engine, source="news", search="luxury")
+
+    assert [r["title"] for r in rows] == ["Quiet luxury takes over runways"]
+
+
+def test_get_raw_content_filtered_empty_when_no_data(db_path):
+    engine = db.init_db(db_path)
+    assert db.get_raw_content_filtered(engine) == []
+
     assert db.get_keyword_recent_mentions(engine, "nonexistent") == []

@@ -80,6 +80,50 @@ def get_all_raw_content(engine) -> list[dict]:
         return [dict(row._mapping) for row in result]
 
 
+def get_raw_content_filtered(
+    engine,
+    source: str | None = None,
+    published_after: str | None = None,
+    published_before: str | None = None,
+    search: str | None = None,
+) -> list[dict]:
+    """Return raw_content rows (excluding the raw_json blob), newest
+    published first, optionally filtered by source, a published_at range,
+    and/or a case-insensitive substring search over title/body. Filters
+    combine with AND."""
+    conditions = []
+    params: dict = {}
+
+    if source:
+        conditions.append("source = :source")
+        params["source"] = source
+    if published_after:
+        conditions.append("published_at >= :published_after")
+        params["published_after"] = published_after
+    if published_before:
+        conditions.append("published_at <= :published_before")
+        params["published_before"] = published_before
+    if search:
+        conditions.append("(LOWER(title) LIKE :search OR LOWER(body) LIKE :search)")
+        params["search"] = f"%{search.lower()}%"
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                f"""
+                SELECT id, source, source_id, url, title, body, author, published_at, ingested_at
+                FROM raw_content
+                {where_clause}
+                ORDER BY published_at DESC
+                """
+            ),
+            params,
+        )
+        return [dict(row._mapping) for row in result]
+
+
 def delete_raw_content_by_source(engine, source: str) -> int:
     """Delete all raw_content rows for a given source, along with any keywords
     extracted from them (SQLite doesn't cascade-delete by default). Used to
