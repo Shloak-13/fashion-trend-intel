@@ -20,6 +20,10 @@ data/exports/*
 !data/processed/.gitkeep
 !data/exports/.gitkeep
 *.db
+# Deployment snapshot for Streamlit Cloud (no background pipeline there --
+# see runtime.txt / Streamlit Cloud deployment notes). Refresh by re-running
+# the pipeline locally and committing an updated snapshot.
+!data/fashion_trends.db
 
 # Notebooks
 .ipynb_checkpoints/
