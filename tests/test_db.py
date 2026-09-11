@@ -484,4 +484,61 @@ def test_get_category_week_heatmap_empty_when_no_data(db_path):
     engine = db.init_db(db_path)
     assert db.get_category_week_heatmap(engine) == []
 
+
+# --- Dashboard query helpers (Phase 4, Page 4: Colour Trends) ---
+
+
+def _seed_colour_trends(engine):
+    """'black': two days, latest 88 on 09-03. 'white': one day, 60 on 09-02.
+    'red' has no rows at all (never ingested)."""
+    db.insert_google_trend(engine, keyword="black", date="2026-09-01", interest_value=70, geo="IN")
+    db.insert_google_trend(engine, keyword="black", date="2026-09-03", interest_value=88, geo="IN")
+    db.insert_google_trend(engine, keyword="white", date="2026-09-02", interest_value=60, geo="IN")
+    # A different geo shouldn't leak into an IN-scoped lookup.
+    db.insert_google_trend(engine, keyword="black", date="2026-09-03", interest_value=10, geo="US")
+
+
+def test_get_latest_google_trends_returns_most_recent_value_per_keyword(db_path):
+    engine = db.init_db(db_path)
+    _seed_colour_trends(engine)
+
+    rows = db.get_latest_google_trends(engine, ["black", "white", "red"])
+
+    by_keyword = {r["keyword"]: r for r in rows}
+    assert by_keyword["black"]["date"] == "2026-09-03"
+    assert by_keyword["black"]["interest_value"] == 88
+    assert by_keyword["white"]["interest_value"] == 60
+    assert "red" not in by_keyword
+
+
+def test_get_latest_google_trends_filters_by_geo(db_path):
+    engine = db.init_db(db_path)
+    _seed_colour_trends(engine)
+
+    rows = db.get_latest_google_trends(engine, ["black"], geo="US")
+
+    assert len(rows) == 1
+    assert rows[0]["interest_value"] == 10
+
+
+def test_get_latest_google_trends_only_returns_requested_keywords(db_path):
+    engine = db.init_db(db_path)
+    _seed_colour_trends(engine)
+
+    rows = db.get_latest_google_trends(engine, ["white"])
+
+    assert [r["keyword"] for r in rows] == ["white"]
+
+
+def test_get_latest_google_trends_empty_for_empty_keyword_list(db_path):
+    engine = db.init_db(db_path)
+    _seed_colour_trends(engine)
+
+    assert db.get_latest_google_trends(engine, []) == []
+
+
+def test_get_latest_google_trends_empty_when_no_data(db_path):
+    engine = db.init_db(db_path)
+    assert db.get_latest_google_trends(engine, ["black"]) == []
+
     assert db.get_keyword_recent_mentions(engine, "nonexistent") == []

@@ -21,6 +21,17 @@ DEFAULT_KEYWORDS = [
     "cargo pants",
     "Y2K",
     "quiet luxury",
+    # Colours (added for Page 4: Colour Trends -- CLAUDE.md Section 8.2)
+    "black",
+    "white",
+    "beige",
+    "brown",
+    "red",
+    "pink",
+    "blue",
+    "green",
+    "purple",
+    "yellow",
 ]
 
 

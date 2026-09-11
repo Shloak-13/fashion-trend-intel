@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from loguru import logger
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import bindparam, create_engine, inspect, text
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
@@ -185,6 +185,30 @@ def get_google_trends_by_keyword(engine, keyword: str) -> list[dict]:
     with engine.connect() as conn:
         result = conn.execute(
             text("SELECT * FROM google_trends WHERE keyword = :keyword"), {"keyword": keyword}
+        )
+        return [dict(row._mapping) for row in result]
+
+
+def get_latest_google_trends(engine, keywords: list[str], geo: str = "IN") -> list[dict]:
+    """Return the most recent google_trends row (date, interest_value) for each
+    keyword in the given list that has data for the given geo. Batched to avoid
+    an N+1 query when rendering many keywords at once (e.g. a colour palette)."""
+    if not keywords:
+        return []
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT keyword, date, interest_value
+                FROM google_trends
+                WHERE keyword IN :keywords AND geo = :geo
+                    AND date = (
+                        SELECT MAX(date) FROM google_trends g2
+                        WHERE g2.keyword = google_trends.keyword AND g2.geo = :geo
+                    )
+                """
+            ).bindparams(bindparam("keywords", expanding=True)),
+            {"keywords": keywords, "geo": geo},
         )
         return [dict(row._mapping) for row in result]
 
