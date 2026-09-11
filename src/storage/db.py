@@ -466,3 +466,120 @@ def get_keyword_recent_mentions(engine, keyword: str, limit: int = 5) -> list[di
             {"keyword": keyword, "limit": limit},
         )
         return [dict(row._mapping) for row in result]
+
+
+# --- Dashboard query helpers (Phase 4, Page 5: Brand Monitor) ---
+
+
+def insert_brand(engine, name: str, tier: str | None = None, country_of_origin: str | None = None) -> int:
+    """Insert a row into brands and return its new id."""
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO brands (name, tier, country_of_origin)
+                VALUES (:name, :tier, :country_of_origin)
+                """
+            ),
+            {"name": name, "tier": tier, "country_of_origin": country_of_origin},
+        )
+        return result.lastrowid
+
+
+def get_brand_id_by_name(engine, name: str) -> int | None:
+    """Look up a brand's id by name, case-insensitively. Returns None if unseeded."""
+    with engine.connect() as conn:
+        return conn.execute(
+            text("SELECT id FROM brands WHERE LOWER(name) = LOWER(:name)"), {"name": name}
+        ).scalar()
+
+
+def insert_brand_mention(
+    engine,
+    brand_id: int,
+    content_id: int,
+    mention_context: str | None,
+    sentiment: float | None,
+    mentioned_at: str | None,
+) -> int:
+    """Insert a row into brand_mentions and return its new id."""
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO brand_mentions (brand_id, content_id, mention_context, sentiment, mentioned_at)
+                VALUES (:brand_id, :content_id, :mention_context, :sentiment, :mentioned_at)
+                """
+            ),
+            {
+                "brand_id": brand_id,
+                "content_id": content_id,
+                "mention_context": mention_context,
+                "sentiment": sentiment,
+                "mentioned_at": mentioned_at,
+            },
+        )
+        return result.lastrowid
+
+
+def delete_brand_mentions_for_content(engine, content_id: int) -> None:
+    """Delete all brand_mentions rows for a given raw_content id (used to keep
+    re-tagging idempotent)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM brand_mentions WHERE content_id = :content_id"),
+            {"content_id": content_id},
+        )
+
+
+def get_top_brands(engine, limit: int = 20) -> list[dict]:
+    """Return brands ranked by mention count, with source diversity and average
+    sentiment (real TextBlob polarity, -1 to 1 -- see brand_tagger.py). Only
+    returns brands with at least one mention."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT
+                    b.name AS brand,
+                    b.tier AS tier,
+                    COUNT(*) AS mention_count,
+                    COUNT(DISTINCT rc.source) AS source_diversity,
+                    AVG(bm.sentiment) AS avg_sentiment
+                FROM brand_mentions bm
+                JOIN brands b ON bm.brand_id = b.id
+                JOIN raw_content rc ON bm.content_id = rc.id
+                GROUP BY b.id
+                ORDER BY mention_count DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": limit},
+        )
+        return [dict(row._mapping) for row in result]
+
+
+def get_brand_keyword_cooccurrence(engine, brand_name: str, limit: int = 10) -> list[dict]:
+    """Return taxonomy-matched keywords that co-occur with a brand's mentions
+    (same content_id), ranked by co-mention count. Excludes 'emerging'
+    keywords, same as get_top_keywords."""
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT
+                    k.keyword AS keyword,
+                    k.keyword_type AS category,
+                    COUNT(*) AS co_mention_count
+                FROM brand_mentions bm
+                JOIN brands b ON bm.brand_id = b.id
+                JOIN keywords k ON k.content_id = bm.content_id
+                WHERE LOWER(b.name) = LOWER(:brand_name) AND k.keyword_type != 'emerging'
+                GROUP BY k.keyword, k.keyword_type
+                ORDER BY co_mention_count DESC
+                LIMIT :limit
+                """
+            ),
+            {"brand_name": brand_name, "limit": limit},
+        )
+        return [dict(row._mapping) for row in result]

@@ -541,4 +541,121 @@ def test_get_latest_google_trends_empty_when_no_data(db_path):
     engine = db.init_db(db_path)
     assert db.get_latest_google_trends(engine, ["black"]) == []
 
+
+# --- Dashboard query helpers (Phase 4, Page 5: Brand Monitor) ---
+
+
+def test_insert_and_get_brand_id_by_name(db_path):
+    engine = db.init_db(db_path)
+    brand_id = db.insert_brand(engine, name="Zara", tier="fast-fashion")
+
+    assert brand_id is not None
+    assert db.get_brand_id_by_name(engine, "Zara") == brand_id
+
+
+def test_get_brand_id_by_name_is_case_insensitive(db_path):
+    engine = db.init_db(db_path)
+    db.insert_brand(engine, name="Zara", tier="fast-fashion")
+
+    assert db.get_brand_id_by_name(engine, "zara") is not None
+    assert db.get_brand_id_by_name(engine, "ZARA") is not None
+
+
+def test_get_brand_id_by_name_returns_none_for_unknown(db_path):
+    engine = db.init_db(db_path)
+    assert db.get_brand_id_by_name(engine, "Nonexistent") is None
+
+
+def _seed_brand_data(engine):
+    """'Zara' mentioned twice (news: positive, whowhatwear: negative);
+    'Gucci' mentioned once (news, neutral). Both content rows also carry an
+    'oversized' Silhouettes keyword; only Zara's second mention co-occurs
+    with a 'denim' Patterns & Textures keyword."""
+    zara_id = db.insert_brand(engine, name="Zara", tier="fast-fashion")
+    gucci_id = db.insert_brand(engine, name="Gucci", tier="luxury")
+
+    c1 = db.insert_raw_content(engine, source="news", url="https://a.com/1", title="a", published_at="2026-09-01T00:00:00Z")
+    c2 = db.insert_raw_content(engine, source="whowhatwear", url="https://a.com/2", title="b", published_at="2026-09-03T00:00:00Z")
+    c3 = db.insert_raw_content(engine, source="news", url="https://a.com/3", title="c", published_at="2026-09-02T00:00:00Z")
+
+    db.insert_keyword(engine, content_id=c1, keyword="oversized", keyword_type="Silhouettes", confidence=1.0)
+    db.insert_keyword(engine, content_id=c2, keyword="oversized", keyword_type="Silhouettes", confidence=1.0)
+    db.insert_keyword(engine, content_id=c2, keyword="denim", keyword_type="Patterns & Textures", confidence=1.0)
+    db.insert_keyword(engine, content_id=c3, keyword="oversized", keyword_type="Silhouettes", confidence=1.0)
+
+    db.insert_brand_mention(engine, brand_id=zara_id, content_id=c1, mention_context="a", sentiment=0.6, mentioned_at="2026-09-01T00:00:00Z")
+    db.insert_brand_mention(engine, brand_id=zara_id, content_id=c2, mention_context="b", sentiment=-0.4, mentioned_at="2026-09-03T00:00:00Z")
+    db.insert_brand_mention(engine, brand_id=gucci_id, content_id=c3, mention_context="c", sentiment=0.0, mentioned_at="2026-09-02T00:00:00Z")
+
+    return zara_id, gucci_id
+
+
+def test_insert_and_delete_brand_mentions_for_content(db_path):
+    engine = db.init_db(db_path)
+    brand_id = db.insert_brand(engine, name="Zara", tier="fast-fashion")
+    content_id = db.insert_raw_content(engine, source="news", title="x")
+    db.insert_brand_mention(engine, brand_id=brand_id, content_id=content_id, mention_context="x", sentiment=0.5, mentioned_at="2026-09-01T00:00:00Z")
+
+    db.delete_brand_mentions_for_content(engine, content_id)
+
+    rows = db.get_top_brands(engine)
+    assert rows == []
+
+
+def test_get_top_brands_ranks_by_mention_count(db_path):
+    engine = db.init_db(db_path)
+    _seed_brand_data(engine)
+
+    rows = db.get_top_brands(engine)
+
+    assert rows[0]["brand"] == "Zara"
+    assert rows[0]["mention_count"] == 2
+    assert rows[0]["source_diversity"] == 2
+    assert rows[0]["tier"] == "fast-fashion"
+    assert rows[0]["avg_sentiment"] == pytest.approx(0.1)
+    assert rows[1]["brand"] == "Gucci"
+    assert rows[1]["mention_count"] == 1
+
+
+def test_get_top_brands_respects_limit(db_path):
+    engine = db.init_db(db_path)
+    _seed_brand_data(engine)
+
+    rows = db.get_top_brands(engine, limit=1)
+
+    assert len(rows) == 1
+
+
+def test_get_top_brands_empty_when_no_mentions(db_path):
+    engine = db.init_db(db_path)
+    db.insert_brand(engine, name="Zara", tier="fast-fashion")
+
+    assert db.get_top_brands(engine) == []
+
+
+def test_get_brand_keyword_cooccurrence_counts_shared_content(db_path):
+    engine = db.init_db(db_path)
+    _seed_brand_data(engine)
+
+    rows = db.get_brand_keyword_cooccurrence(engine, "Zara")
+
+    by_keyword = {r["keyword"]: r["co_mention_count"] for r in rows}
+    assert by_keyword["oversized"] == 2
+    assert by_keyword["denim"] == 1
+
+
+def test_get_brand_keyword_cooccurrence_excludes_emerging(db_path):
+    engine = db.init_db(db_path)
+    brand_id = db.insert_brand(engine, name="Zara", tier="fast-fashion")
+    c1 = db.insert_raw_content(engine, source="news", title="x")
+    db.insert_keyword(engine, content_id=c1, keyword="novelty", keyword_type="emerging", confidence=0.9)
+    db.insert_brand_mention(engine, brand_id=brand_id, content_id=c1, mention_context="x", sentiment=0.0, mentioned_at="2026-09-01T00:00:00Z")
+
+    assert db.get_brand_keyword_cooccurrence(engine, "Zara") == []
+
+
+def test_get_brand_keyword_cooccurrence_empty_for_unknown_brand(db_path):
+    engine = db.init_db(db_path)
+    assert db.get_brand_keyword_cooccurrence(engine, "Nonexistent") == []
+
     assert db.get_keyword_recent_mentions(engine, "nonexistent") == []
